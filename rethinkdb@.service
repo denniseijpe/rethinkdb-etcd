@@ -1,0 +1,27 @@
+[Unit]
+Description=RethinkDB docker container using etcd for cluster discovery
+
+[Service]
+Restart=always
+TimeoutStartSec=20m
+
+EnvironmentFile=/etc/environment
+Environment=IMAGE=denniseijpe/rethinkdb-etcd
+
+ExecStartPre=-/usr/bin/docker pull ${IMAGE}
+ExecStartPre=-/usr/bin/docker rm -f -v %p
+
+ExecStartPre=/bin/sh -c "docker inspect %p_data >/dev/null 2>&1 || docker run -d --name %p_data -v /data busybox true"
+
+ExecStart=/usr/bin/docker run \
+          --name %p \
+          --env-file=/etc/environment \
+           --volumes-from=%p_data \
+          -h %H \
+          -p ${COREOS_PRIVATE_IPV4}:28015:28015 \
+          ${IMAGE}
+
+ExecStop=-/usr/bin/docker kill %p
+
+[X-Fleet]
+MachineMetadata=machine=%i

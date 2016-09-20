@@ -1,0 +1,17 @@
+#!/bin/bash
+
+function etcd_set_default {
+  /app/bin/etcdctl $ETCD_OPTIONS  mk $ETCD_PREFIX/$1 $2 >/dev/null 2>&1 || true
+}
+
+function etcd_make_directory {
+  /app/bin/etcdctl $ETCD_OPTIONS  setdir $ETCD_PREFIX/$1 >/dev/null 2>&1 || true
+}
+
+function cluster_members() {
+  CLUSTER_MEMBERS=""
+  for key in $(/app/bin/etcdctl $ETCD_OPTIONS ls $ETCD_PREFIX/nodes); do
+    value=$(/app/bin/etcdctl $ETCD_OPTIONS get $key)
+    CLUSTER_MEMBERS+=" --join $(basename $value):29015"
+  done
+}

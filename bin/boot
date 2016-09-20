@@ -1,0 +1,87 @@
+#!/bin/bash
+#
+# This script is designed to be run inside the container.
+#
+
+# fail hard and fast even on pipelines
+set -eo pipefail
+
+# set debug based on envvar
+[[ $DEBUG ]] && set -x
+
+DIR=$(dirname $0)
+
+# functions
+. $DIR/functions
+
+#================
+# NETWORK CONFIG
+#================
+export PRIVATE_INTERFACE=${PRIVATE_INTERFACE:-eth0}
+export CONTAINER_IPV4=$(ip a s $PRIVATE_INTERFACE | grep "global $PRIVATE_INTERFACE" | awk '{print $2}' | cut -f1 -d'/')
+echo "Container IP: $CONTAINER_IPV4"
+
+#================
+# CONFIGURE ETCD
+#================
+export ETCD_PREFIX=${ETCD_PREFIX:-/rethinkdb}
+export ETCD_PORT=${ETCD_PORT:-2379}
+export ETCD_HOST=${ETCD_HOST:-$COREOS_PRIVATE_IPV4}
+export ETCD_URL="http://$ETCD_HOST:$ETCD_PORT"
+export ETCD_TTL=${ETCD_TTL:-10}
+export ETCD_OPTIONS="--no-sync -C $ETCD_URL"
+
+# wait for etcd to be available
+until /app/bin/etcdctl --no-sync -C $ETCD_URL ls >/dev/null 2>&1; do
+  echo "echo ==> waiting for etcd at $ETCD_URL..."
+  sleep $(($ETCD_TTL/2))  # sleep for half the TTL
+done
+
+# wait until etcd has discarded potentially stale values
+sleep $(($ETCD_TTL+1))
+
+#=======================
+# ETCD DISCOVERY CONFIG
+#=======================
+export MON_PORT=28015
+export MON_PROTOCOL=tcp
+echo "discovery: /app/bin/run_discovery" >> Procfile
+
+#==================
+# RETHINKDB CONFIG
+#==================
+etcd_make_directory nodes
+
+RETHINKDB_OPTIONS="--bind all --directory /data -n $HOSTNAME"
+cluster_members
+
+echo Starting RethinkDB cluster discovery
+
+if [[ -z $CLUSTER_MEMBERS ]]; then
+  # Perform Election
+  echo "==> Performing Election..."
+  /app/bin/etcdctl $ETCD_OPTIONS ls $ETCD_PREFIX/election >/dev/null 2>&1 || /app/bin/etcdctl $ETCD_OPTIONS mkdir $ETCD_PREFIX/election >/dev/null 2>&1
+  if /app/bin/etcdctl $ETCD_OPTIONS mk $ETCD_PREFIX/election/bootstrap $HOSTNAME >/dev/null 2>&1; then
+    echo "-----> I win!"
+    BOOTSTRAP=1
+    /app/bin/etcdctl $ETCD_OPTIONS set $ETCD_PREFIX/election/bootstrap $HOSTNAME --ttl 60 >/dev/null 2>&1
+    echo "rethinkdb: rethinkdb $RETHINKDB_OPTIONS" >> Procfile
+  else
+    echo -n "-----> I lost election.  Waiting for leader."
+    until [[ ! -z $CLUSTER_MEMBERS ]]; do
+      cluster_members
+      echo -n "."
+      sleep 10
+    done
+    echo "-----> leader ready.  Starting."
+    sleep 5
+    echo "-----> joining cluster with known members: $CLUSTER_MEMBERS"
+    echo "rethinkdb: rethinkdb $RETHINKDB_OPTIONS $CLUSTER_MEMBERS" >> Procfile
+  fi
+else
+  echo "-----> joining cluster with known members: $CLUSTER_MEMBERS"
+  echo "rethinkdb: rethinkdb $RETHINKDB_OPTIONS $CLUSTER_MEMBERS" >> Procfile
+fi
+
+# Run forego
+exec /app/bin/forego start -r

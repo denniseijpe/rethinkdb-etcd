@@ -1,0 +1,11 @@
+#!/bin/bash
+
+while true
+do
+  if [[ ! -z $(netstat -lnt | awk "\$6 == \"LISTEN\" && \$4 ~ \".$MON_PORT\" && \$1 ~ \"$MON_PROTOCOL.?\"") ]]
+  then
+    /app/bin/etcdctl $ETCD_OPTIONS set $ETCD_PREFIX/nodes/$HOSTNAME $CONTAINER_IPV4 --ttl $ETCD_TTL >/dev/null
+  fi
+
+  sleep $(($ETCD_TTL/2))  # sleep for half the TTL
+done
